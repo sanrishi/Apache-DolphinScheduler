@@ -138,6 +138,13 @@ func main() {
 		cancel()
 	}()
 
+	// Record memory baseline before any failover work.
+	// After all workflows complete and GC runs, we compare against
+	// this baseline to verify no unbounded memory accumulation.
+	runtime.GC()
+	var baseline runtime.MemStats
+	runtime.ReadMemStats(&baseline)
+
 	const (
 		iterations      = 5000
 		maxConcurrency  = 10 // Simulates a bounded thread pool
@@ -184,16 +191,25 @@ loop:
 		fmt.Println("All registry listeners properly deregistered.")
 	}
 
-	// Force GC to demonstrate memory stability
+	// Force GC and measure final memory to compare against baseline.
+	// This is the key verification: if memory does not return to near-baseline
+	// levels, it indicates a leak (unreachable but uncollected objects).
 	runtime.GC()
+	var final runtime.MemStats
+	runtime.ReadMemStats(&final)
 
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+	// Compute the ratio of final allocated memory to baseline.
+	// A ratio significantly above 1.0 indicates retained heap growth.
+	ratio := float64(final.Alloc) / float64(baseline.Alloc+1) // avoid div-by-zero
 
 	fmt.Printf("Recovery completed successfully for %d instances.\n", iterations)
-	fmt.Printf("Allocated Memory: %v MiB\n", m.Alloc/1024/1024)
-	fmt.Printf("Total Alloc: %v MiB\n", m.TotalAlloc/1024/1024)
-	fmt.Printf("Sys Memory: %v MiB\n", m.Sys/1024/1024)
-	fmt.Printf("Num GC: %v\n", m.NumGC)
-	fmt.Println("Memory usage stabilized. No leaks detected.")
+	fmt.Printf("Baseline Heap:  %v KiB\n", baseline.Alloc/1024)
+	fmt.Printf("Final Heap:     %v KiB\n", final.Alloc/1024)
+	fmt.Printf("Retention Ratio: %.2fx\n", ratio)
+
+	if ratio > 1.1 {
+		fmt.Printf("WARNING: Memory retention ratio %.2fx exceeds threshold (1.1x). Possible leak.\n", ratio)
+	} else {
+		fmt.Println("Memory usage returned to baseline. No leaks detected.")
+	}
 }
