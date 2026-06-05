@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -41,28 +42,6 @@ func (r *RegistryClient) RemoveListener(key string) {
 	delete(r.listeners, key)
 }
 
-// ThreadLocalContext simulates thread-local storage.
-type dataMap struct {
-	sync.Mutex
-	data map[string]interface{}
-}
-
-var contextMap = dataMap{
-	data: make(map[string]interface{}),
-}
-
-func SetContext(key string, val interface{}) {
-	contextMap.Lock()
-	defer contextMap.Unlock()
-	contextMap.data[key] = val
-}
-
-func ClearContext() {
-	contextMap.Lock()
-	defer contextMap.Unlock()
-	contextMap.data = make(map[string]interface{})
-}
-
 // FailoverService coordinates the failover and recovery process.
 type FailoverService struct {
 	registryClient *RegistryClient
@@ -75,10 +54,13 @@ func NewFailoverService(registry *RegistryClient) *FailoverService {
 }
 
 // FailoverWorkflow simulates the recovery of a single workflow instance.
-func (f *FailoverService) FailoverWorkflow(instanceID int64) {
-	// 1. Set thread-local context
-	SetContext(fmt.Sprintf("workflow-%d", instanceID), "metadata")
-	defer ClearContext() // Ensure thread-local context is cleared
+func (f *FailoverService) FailoverWorkflow(ctx context.Context, instanceID int64) {
+	// 1. Set thread-local context via immutable context chain (goroutine-safe)
+	ctx = context.WithValue(ctx, "workflow", fmt.Sprintf("workflow-%d", instanceID))
+	ctx = context.WithValue(ctx, "metadata", "metadata")
+	defer func() {
+		ctx = nil // Release context chain reference for GC
+	}()
 
 	// 2. Register registry listener
 	listenerKey := fmt.Sprintf("listener-%d", instanceID)
@@ -94,6 +76,7 @@ func (f *FailoverService) FailoverWorkflow(instanceID int64) {
 	}()
 
 	// Simulate recovery work
+	_ = ctx
 	_ = storage
 }
 
@@ -103,6 +86,11 @@ func main() {
 	registry := NewRegistryClient()
 	failoverService := NewFailoverService(registry)
 
+	// Root context shared across all failover goroutines.
+	// Each goroutine derives its own immutable child context,
+	// making this goroutine-safe with no global mutable state.
+	ctx := context.Background()
+
 	const iterations = 5000
 	var wg sync.WaitGroup
 
@@ -111,7 +99,7 @@ func main() {
 		wg.Add(1)
 		go func(id int64) {
 			defer wg.Done()
-			failoverService.FailoverWorkflow(id)
+			failoverService.FailoverWorkflow(ctx, id)
 		}(int64(i))
 	}
 
