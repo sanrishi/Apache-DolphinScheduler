@@ -42,6 +42,22 @@ func (r *RegistryClient) RemoveListener(key string) {
 	delete(r.listeners, key)
 }
 
+// ListenerCount returns the number of currently registered listeners.
+func (r *RegistryClient) ListenerCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.listeners)
+}
+
+// Close removes all listeners and releases registry resources.
+// This simulates Curator's close() which deregisters all watchers
+// and prevents PathChildrenCache accumulation across reconnect cycles.
+func (r *RegistryClient) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.listeners = make(map[string]func())
+}
+
 // FailoverService coordinates the failover and recovery process.
 type FailoverService struct {
 	registryClient *RegistryClient
@@ -84,6 +100,8 @@ func main() {
 	fmt.Println("Starting OSD Memory Recovery Simulation...")
 
 	registry := NewRegistryClient()
+	defer registry.Close() // Ensure all listeners are cleaned up on shutdown
+
 	failoverService := NewFailoverService(registry)
 
 	// Root context shared across all failover goroutines.
@@ -114,6 +132,13 @@ func main() {
 	}
 
 	wg.Wait()
+
+	// Verify active listeners after all workflows complete
+	if remaining := registry.ListenerCount(); remaining > 0 {
+		fmt.Printf("WARNING: %d registry listeners were not removed!\n", remaining)
+	} else {
+		fmt.Println("All registry listeners properly deregistered.")
+	}
 
 	// Force GC to demonstrate memory stability
 	runtime.GC()
