@@ -91,14 +91,24 @@ func main() {
 	// making this goroutine-safe with no global mutable state.
 	ctx := context.Background()
 
-	const iterations = 5000
+	const (
+		iterations      = 5000
+		maxConcurrency  = 10 // Simulates a bounded thread pool
+	)
 	var wg sync.WaitGroup
 
-	// Simulate sequential/concurrent recovery load
+	// Channel-based semaphore to bound concurrent failover goroutines.
+	// This simulates a bounded ThreadPoolExecutor: at most maxConcurrency
+	// goroutines execute simultaneously; excess submissions block until
+	// a slot opens, preventing unbounded task queue growth.
+	sem := make(chan struct{}, maxConcurrency)
+
 	for i := 0; i < iterations; i++ {
+		sem <- struct{}{} // blocks if at capacity
 		wg.Add(1)
 		go func(id int64) {
 			defer wg.Done()
+			defer func() { <-sem }() // release slot
 			failoverService.FailoverWorkflow(ctx, id)
 		}(int64(i))
 	}
